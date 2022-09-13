@@ -1,0 +1,32 @@
+syntax = "proto3";
+option java_multiple_files = true;
+package com.trade.communication.grpc.generated;
+
+message OrderRequest {
+    int32 id = 1;
+    string stockSymbol = 2;
+    int32 quantity = 3;
+    double price = 4;
+    string orderType = 5;
+    bool isSentByPrimary = 6;
+}
+
+message OrderResponse {
+    string status = 1;
+}
+
+message StockMarketRegisteredRecord {
+    string name = 1;
+    int32 quantity = 2;
+}
+
+service StockTradingService {
+    rpc tradeOperation(OrderRequest) returns (OrderResponse);
+
+    rpc getStockMarketRegisteredData(Empty) returns (stream StockMarketRegisteredRecord);
+
+    rpc getOrderBookRecords(Empty) returns (stream OrderRequest);
+
+}
+
+message Empty{}
