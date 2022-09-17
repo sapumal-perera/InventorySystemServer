@@ -57,7 +57,11 @@ public class InventorySystemImpl extends InventoryServiceGrpc.InventoryServiceIm
         InventoryOperationRequest orderRequest = InventoryOperationRequest.newBuilder(request)
                 .setIsSentByPrimary(isSentByPrimary)
                 .build();
-        return clientStub.orderItem(orderRequest);
+        if (orderRequest.getOperationType().equals(OperationTypes.ORDER.name())) {
+            return clientStub.orderItem(orderRequest);
+        } else {
+            return clientStub.updateInventory(orderRequest);
+        }
     }
 
     private InventoryOperationResponse callPrimary(String itemCode, InventoryOperationRequest request) {
@@ -86,34 +90,39 @@ public class InventorySystemImpl extends InventoryServiceGrpc.InventoryServiceIm
                 System.out.println("Processing received client request as Primary");
                 startDistributedTx(itemCode, request);
                 updateSecondaryServers(itemCode, request);
-                if (server.getInventoryDb().containsKey(itemCode)) {
+                if (server.getInventoryDb().containsKey(itemCode) && (server.getInventoryDb().get(itemCode).getQuantity() - request.getQuantity()) > 0 || (server.getInventoryDb().get(itemCode).getQuantity() - request.getQuantity()) == 0) {
                     ((DistributedTxCoordinator) server.getOrderTransaction()).perform();
-                    transactionStatus = "SUCCESSFUL";
+                    transactionStatus = "Request " + request.getRequsetId() + " for " + request.getItemCode() + " Successfully processed";
+                } else if (server.getInventoryDb().containsKey(itemCode) && (server.getInventoryDb().get(itemCode).getQuantity() - request.getQuantity()) < 0) {
+                    ((DistributedTxCoordinator) server.getOrderTransaction()).perform();
+                    transactionStatus = "To perform Request " + request.getRequsetId() + " for " + request.getItemCode() + " added to the queue since insufficient item quantity. Request will be execute later.";
                 } else {
                     ((DistributedTxCoordinator) server.getOrderTransaction()).sendGlobalAbort();
-                    transactionStatus = "FAILED";
+                    transactionStatus = "Request failed. Please try again later";
                 }
             } catch (Exception e) {
                 System.out.println("Error while processing the client request" + e.getMessage());
                 e.printStackTrace();
-                transactionStatus = "FAILED";
+                transactionStatus = "Request failed. Please try again later";
             }
         } else {
             if (request.getIsSentByPrimary()) {
                 System.out.println("Processing received client request as Secondary, on Primary's command");
                 startDistributedTx(itemCode, request);
-
-                if (server.getInventoryDb().containsKey(itemCode)) {
+                if (server.getInventoryDb().containsKey(itemCode) && (server.getInventoryDb().get(itemCode).getQuantity() - request.getQuantity()) > 0 || (server.getInventoryDb().get(itemCode).getQuantity() - request.getQuantity()) == 0) {
                     ((DistributedTxParticipant) server.getOrderTransaction()).voteCommit();
-                    transactionStatus = "SUCCESSFUL";
+                    transactionStatus = "Request " + request.getRequsetId() + " for " + request.getItemCode() + " Successfully processed";
+                } else if (server.getInventoryDb().containsKey(itemCode) && (server.getInventoryDb().get(itemCode).getQuantity() - request.getQuantity()) < 0) {
+                    ((DistributedTxParticipant) server.getOrderTransaction()).voteCommit();
+                    transactionStatus = "To perform Request " + request.getRequsetId() + " for " + request.getItemCode() + " added to the queue since insufficient item quantity. Request will be execute later.";
                 } else {
                     ((DistributedTxParticipant) server.getOrderTransaction()).voteAbort();
-                    transactionStatus = "FAILED";
+                    transactionStatus = "Error occurred";
                 }
             } else {
                 InventoryOperationResponse response = callPrimary(itemCode, request);
                 if (response.getStatus().equals("SUCCESSFUL")) {
-                    transactionStatus = "SUCCESSFUL";
+                    transactionStatus = "Request processing successfully.";
                 }
             }
         }
@@ -134,15 +143,19 @@ public class InventorySystemImpl extends InventoryServiceGrpc.InventoryServiceIm
                 updateSecondaryServers(itemCode, request);
                 if (server.getInventoryDb().containsKey(itemCode)) {
                     ((DistributedTxCoordinator) server.getOrderTransaction()).perform();
-                    transactionStatus = "SUCCESSFUL";
+                    if (server.getOrderRequestList().size() == 0) {
+                        transactionStatus = "Request " + request.getRequsetId() + " for updating" + request.getItemCode() + " Successfully processed";
+                    } else {
+                        transactionStatus = "Updating" + request.getItemCode() + " Successfully processed. Pending order requests will be executed.";
+                    }
                 } else {
                     ((DistributedTxCoordinator) server.getOrderTransaction()).sendGlobalAbort();
-                    transactionStatus = "FAILED";
+                    transactionStatus = "This item is not exist. Please check the code and try again";
                 }
             } catch (Exception e) {
                 System.out.println("Error while processing the client request" + e.getMessage());
                 e.printStackTrace();
-                transactionStatus = "FAILED";
+                transactionStatus = "Request failed. Please try again later";
             }
         } else {
             if (request.getIsSentByPrimary()) {
@@ -150,15 +163,15 @@ public class InventorySystemImpl extends InventoryServiceGrpc.InventoryServiceIm
                 startDistributedTx(itemCode, request);
                 if (server.getInventoryDb().containsKey(itemCode)) {
                     ((DistributedTxParticipant) server.getOrderTransaction()).voteCommit();
-                    transactionStatus = "SUCCESSFUL";
+                    transactionStatus = "Request " + request.getRequsetId() + " for updating" + request.getItemCode() + " Successfully processed";
                 } else {
                     ((DistributedTxParticipant) server.getOrderTransaction()).voteAbort();
-                    transactionStatus = "FAILED";
+                    transactionStatus = "Request failed. Please try again later";
                 }
             } else {
                 InventoryOperationResponse response = callPrimary(itemCode, request);
                 if (response.getStatus().equals("SUCCESSFUL")) {
-                    transactionStatus = "SUCCESSFUL";
+                    transactionStatus = "Request processing successfully.";
                 }
             }
         }
@@ -176,16 +189,16 @@ public class InventorySystemImpl extends InventoryServiceGrpc.InventoryServiceIm
         if (tempDataHolder != null) {
             String itemCode = tempDataHolder.getKey();
             InventoryOperationRequest request = tempDataHolder.getValue();
-                    String operationType = request.getOperationType();
+            String operationType = request.getOperationType();
             Map<String, ItemDetail> items = server.getInventoryDb();
             if (items.containsKey(itemCode)) {
                 ItemDetail data = items.get(itemCode);
                 if (operationType.equals(OperationTypes.ORDER.name())) {
                     System.out.println(" Order Hit. data.getQuantity()" + data.getQuantity());
                     System.out.println(" Order Hit. request.getQuantity()" + request.getQuantity());
-                    if ((data.getQuantity() -request.getQuantity())> 0 || (data.getQuantity() -request.getQuantity()) == 0) {
+                    if ((data.getQuantity() - request.getQuantity()) > 0 || (data.getQuantity() - request.getQuantity()) == 0) {
                         System.out.println(" Order if. request.getQuantity()" + request.getQuantity());
-                        server.getInventoryDb().get(itemCode).setQuantity(data.getQuantity() -request.getQuantity());
+                        server.getInventoryDb().get(itemCode).setQuantity(data.getQuantity() - request.getQuantity());
                     } else {
                         System.out.println(" Order Queue. request.getQuantity()" + request.getQuantity());
                         orderRequestList.add(request);
@@ -194,13 +207,14 @@ public class InventorySystemImpl extends InventoryServiceGrpc.InventoryServiceIm
                     System.out.println(itemCode + " order is successful");
                 } else if (operationType.equals(OperationTypes.UPDATE.name())) {
                     System.out.println(" Order Update. request.getQuantity()" + request.getQuantity());
-
                     server.getInventoryDb().get(itemCode).setQuantity(data.getQuantity() + request.getQuantity());
-                    for ( InventoryOperationRequest orderReq:  orderRequestList) {
-                        if(orderReq.getItemCode().equals(request.getItemCode()) && (orderReq.getQuantity() < server.getInventoryDb().get(itemCode).getQuantity())) {
+                    for (InventoryOperationRequest orderReq : orderRequestList) {
+                        if (orderReq.getItemCode().equals(request.getItemCode()) && (orderReq.getQuantity() < server.getInventoryDb().get(itemCode).getQuantity())) {
+                            System.out.println("Item code "+ orderReq.getItemCode() + " quantuty " +  orderReq.getQuantity());
                             System.out.println(" Order Queue  Run. request.getItemCode()" + request.getItemCode());
 
                             server.getInventoryDb().get(orderReq.getItemCode()).setQuantity(server.getInventoryDb().get(itemCode).getQuantity() - orderReq.getQuantity());
+                            orderRequestList.remove(orderReq);
                             System.out.println(orderReq.getItemCode() + " order executed successfully");
 
                         }

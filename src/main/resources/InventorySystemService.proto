@@ -3,10 +3,11 @@ option java_multiple_files = true;
 package com.inventorymanager.communication.grpc.generated;
 
 message InventoryOperationRequest {
-    string itemCode = 1;
-    int32 quantity = 2;
-    string operationType = 3;
-    bool isSentByPrimary = 4;
+    int32 requsetId = 1;
+    string itemCode = 2;
+    int32 quantity = 3;
+    string operationType = 4;
+    bool isSentByPrimary = 5;
 }
 
 message InventoryOperationResponse {
