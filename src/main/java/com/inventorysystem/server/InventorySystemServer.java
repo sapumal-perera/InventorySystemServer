@@ -8,12 +8,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import com.stock.trade.name.service.NameServiceClient;
-import com.stock.trade.sycnhronization.DistributedLock;
-import com.stock.trade.sycnhronization.DistributedTx;
-import com.stock.trade.sycnhronization.DistributedTxCoordinator;
-import com.stock.trade.sycnhronization.DistributedTxParticipant;
-import com.trade.communication.grpc.generated.OrderRequest;
+import com.inventorymanager.communication.grpc.generated.InventoryOperationRequest;
+import com.inventorysystem.service.NameServiceClient;
+import com.inventorysystem.sycnhronization.DistributedLock;
+import com.inventorysystem.sycnhronization.DistributedTx;
+import com.inventorysystem.sycnhronization.DistributedTxCoordinator;
+import com.inventorysystem.sycnhronization.DistributedTxParticipant;
 import io.grpc.Server;
 import io.grpc.ServerBuilder;
 import org.apache.log4j.BasicConfigurator;
@@ -22,50 +22,39 @@ import org.apache.log4j.Logger;
 import org.apache.zookeeper.KeeperException;
 
 public class InventorySystemServer {
-    //name-service
     public static final String NAME_SERVICE_ADDRESS = "http://localhost:2379";
     private final int serverPort;
-    //leader
     private final AtomicBoolean isLeader = new AtomicBoolean( false );
     private byte[] leaderData;
-    //distributed lock
     private final DistributedLock leaderLock;
     DistributedTx transaction;
-    //InventorySystemImpl
-    private InventorySystemImpl tradingService = null;
-    //registeredStockDb
-    private final Map<String, Integer> registeredStockDb = new HashMap<>();
-    //orderBook
-    private final List<OrderRequest> orderBook = Collections.synchronizedList( new ArrayList<>() );
+    private InventorySystemImpl inventoryManagerService = null;
+    private final Map<String, ItemDetail> inventoryDataDb = new HashMap<>();
+    private final List<InventoryOperationRequest> orderRequestList = Collections.synchronizedList( new ArrayList<>() );
 
     {
-        // registered stocks
-        registeredStockDb.put( "HILTON", 200 );
-        registeredStockDb.put( "KINGSBURY", 300 );
-        registeredStockDb.put( "CINNAMON", 400 );
-        registeredStockDb.put( "JETWING", 500 );
+        inventoryDataDb.put( "TEL-X01", new ItemDetail("TEL-X01", "Telescope X01", 5, 21500));
+        inventoryDataDb.put( "DRN-A01",  new ItemDetail("DRN-A01", "Drone A01", 7, 16000));
     }
 
     public InventorySystemServer(String host, int port) throws InterruptedException, IOException, KeeperException {
         this.serverPort = port;
         leaderLock = new DistributedLock( "TradingServerCluster", buildServerData( host, port ) );
-        //distributed lock
-        tradingService = new InventorySystemImpl( this );
-        transaction = new DistributedTxParticipant( tradingService );
+        inventoryManagerService = new InventorySystemImpl( this );
+        transaction = new DistributedTxParticipant(inventoryManagerService);
     }
 
-    //distributed lock
-    public DistributedTx getStockTransaction() {
+    public DistributedTx getOrderTransaction() {
         return transaction;
     }
 
     public void startServer() throws IOException, InterruptedException, KeeperException {
         Server server = ServerBuilder
                 .forPort( serverPort )
-                .addService( tradingService )
+                .addService(inventoryManagerService)
                 .build();
         server.start();
-        System.out.println( "Stock Trading Server started and ready to accept requests on port " + serverPort );
+        System.out.println( "Inventory system Server started and ready to accept requests on port " + serverPort );
 
         tryToBeLeader();
         server.awaitTermination();
@@ -74,7 +63,7 @@ public class InventorySystemServer {
     private void beTheLeader() {
         System.out.println( "I got the leader lock. Now acting as primary" );
         isLeader.set( true );
-        transaction = new DistributedTxCoordinator( tradingService );
+        transaction = new DistributedTxCoordinator(inventoryManagerService);
     }
 
     public static String buildServerData(String IP, int port) {
@@ -141,26 +130,16 @@ public class InventorySystemServer {
         if ( args.length != 1 ) {
             System.out.println( "Usage executable-name <port>" );
         }
-
-        //set the ZooKeeperURL
         DistributedLock.setZooKeeperURL( "localhost:2181" );
-
-        //set the zookeeper url for the distributed transaction
         DistributedTx.setZooKeeperURL( "localhost:2181" );
-
-        //get server port
-        int serverPort = 11436;
+        int serverPort = Integer.parseInt( args[0] );
 
         InventorySystemServer server = null;
         try {
-            //register in name service client (etcd)
-            System.out.println("Registered the stock trading server in name service...");
+            System.out.println("Registered the inventory system server in name service...");
             NameServiceClient client = new NameServiceClient( NAME_SERVICE_ADDRESS );
-            client.registerService( "StockTradingService", "127.0.0.1", serverPort, "tcp" );
-
-            //set host and port of the server
+            client.registerService( "InventoryManagementSystem", "127.0.0.1", serverPort, "tcp" );
             server = new InventorySystemServer( "localhost", serverPort );
-            //start server
             server.startServer();
         }
         catch ( InterruptedException | IOException | KeeperException e ) {
@@ -168,19 +147,16 @@ public class InventorySystemServer {
         }
     }
 
-    //get orderBook
-    public List<OrderRequest> getOrderBook() {
-        return orderBook;
+    public List<InventoryOperationRequest> getOrderRequestList() {
+        return orderRequestList;
     }
 
-    //add order request to the orderBook
-    public void addOrderToOrderBook(OrderRequest orderRequest) {
-        this.orderBook.add( orderRequest );
+    public void addOrderToOrderBook(InventoryOperationRequest orderRequest) {
+        this.orderRequestList.add( orderRequest );
     }
 
-    //get registered stocks in the system
-    public Map<String, Integer> getRegisteredStockDb() {
-        return registeredStockDb;
+    public Map<String, ItemDetail> getInventoryDb() {
+        return inventoryDataDb;
     }
 
 }

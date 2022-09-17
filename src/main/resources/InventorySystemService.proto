@@ -1,32 +1,35 @@
 syntax = "proto3";
 option java_multiple_files = true;
-package com.trade.communication.grpc.generated;
+package com.inventorymanager.communication.grpc.generated;
 
-message OrderRequest {
-    int32 id = 1;
-    string stockSymbol = 2;
+message InventoryOperationRequest {
+    string itemCode = 1;
+    int32 quantity = 2;
+    string operationType = 3;
+    bool isSentByPrimary = 4;
+}
+
+message InventoryOperationResponse {
+    string itemCode = 1;
+    int32 quantity = 2;
+    string status = 3;
+}
+
+message Item {
+    string itemCode = 1;
+    string name = 2;
     int32 quantity = 3;
     double price = 4;
-    string orderType = 5;
-    bool isSentByPrimary = 6;
-}
-
-message OrderResponse {
-    string status = 1;
-}
-
-message StockMarketRegisteredRecord {
-    string name = 1;
-    int32 quantity = 2;
-}
-
-service StockTradingService {
-    rpc tradeOperation(OrderRequest) returns (OrderResponse);
-
-    rpc getStockMarketRegisteredData(Empty) returns (stream StockMarketRegisteredRecord);
-
-    rpc getOrderBookRecords(Empty) returns (stream OrderRequest);
-
 }
 
 message Empty{}
+
+
+service InventoryService {
+    rpc updateInventory(InventoryOperationRequest) returns (InventoryOperationResponse);
+
+    rpc getInventory(Empty) returns (stream Item);
+
+    rpc orderItem(InventoryOperationRequest) returns (InventoryOperationResponse);
+
+}

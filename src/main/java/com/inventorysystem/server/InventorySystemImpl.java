@@ -2,31 +2,25 @@ package com.inventorysystem.server;
 
 import java.io.IOException;
 import java.util.List;
-import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 
-import com.stock.trade.sycnhronization.DistributedTxCoordinator;
-import com.stock.trade.sycnhronization.DistributedTxListener;
-import com.stock.trade.sycnhronization.DistributedTxParticipant;
-import com.trade.communication.grpc.generated.Empty;
-import com.trade.communication.grpc.generated.OrderRequest;
-import com.trade.communication.grpc.generated.OrderResponse;
-import com.trade.communication.grpc.generated.StockMarketRegisteredRecord;
-import com.trade.communication.grpc.generated.StockTradingServiceGrpc;
+import com.inventorymanager.communication.grpc.generated.*;
+import com.inventorysystem.sycnhronization.DistributedTxCoordinator;
+import com.inventorysystem.sycnhronization.DistributedTxListener;
+import com.inventorysystem.sycnhronization.DistributedTxParticipant;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.stub.StreamObserver;
 import javafx.util.Pair;
 import org.apache.zookeeper.KeeperException;
 
-public class InventorySystemImpl extends StockTradingServiceGrpc.StockTradingServiceImplBase implements DistributedTxListener {
+public class InventorySystemImpl extends InventoryServiceGrpc.InventoryServiceImplBase implements DistributedTxListener {
 
-    private Pair<String, OrderRequest> tempDataHolder;
+    private Pair<String, InventoryOperationRequest> tempDataHolder;
     private ManagedChannel channel = null;
-    private StockTradingServiceGrpc.StockTradingServiceBlockingStub clientStub = null;
+    private InventoryServiceGrpc.InventoryServiceBlockingStub clientStub = null;
     private InventorySystemServer server;
-
-    //transaction status
     private String transactionStatus = "";
 
     public InventorySystemImpl(InventorySystemServer server) {
@@ -41,221 +35,194 @@ public class InventorySystemImpl extends StockTradingServiceGrpc.StockTradingSer
     @Override
     public void onGlobalAbort() {
         tempDataHolder = null;
-        System.out.println( "Trading is aborted by the Coordinator" );
+        System.out.println("Transaction is aborted by the Coordinator");
     }
 
-    private void startDistributedTx(String stockSymbol, OrderRequest request) {
+    private void startDistributedTx(String itemCode, InventoryOperationRequest request) {
         try {
-            server.getStockTransaction().start( stockSymbol, String.valueOf( UUID.randomUUID() ) );
-            tempDataHolder = new Pair<>( stockSymbol, request );
-        }
-        catch ( IOException e ) {
+            server.getOrderTransaction().start(itemCode, String.valueOf(UUID.randomUUID()));
+            tempDataHolder = new Pair<>(itemCode, request);
+        } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
-    private OrderResponse callServer(String stockSymbol, OrderRequest request, boolean isSentByPrimary, String IPAddress, int port) {
-        System.out.println( "Call Server " + IPAddress + ":" + port );
-        channel = ManagedChannelBuilder.forAddress( IPAddress, port )
+    private InventoryOperationResponse callServer(String itemCode, InventoryOperationRequest request, boolean isSentByPrimary, String IPAddress, int port) {
+        System.out.println("Call Server " + IPAddress + ":" + port);
+        channel = ManagedChannelBuilder.forAddress(IPAddress, port)
                 .usePlaintext()
                 .build();
-        clientStub = StockTradingServiceGrpc.newBlockingStub( channel );
+        clientStub = InventoryServiceGrpc.newBlockingStub(channel);
 
-        OrderRequest orderRequest = OrderRequest.newBuilder( request )
-                .setIsSentByPrimary( isSentByPrimary )
+        InventoryOperationRequest orderRequest = InventoryOperationRequest.newBuilder(request)
+                .setIsSentByPrimary(isSentByPrimary)
                 .build();
-        return clientStub.tradeOperation( orderRequest );
+        return clientStub.orderItem(orderRequest);
     }
 
-    private OrderResponse callPrimary(String stockSymbol, OrderRequest request) {
-        System.out.println( "Calling Primary server" );
+    private InventoryOperationResponse callPrimary(String itemCode, InventoryOperationRequest request) {
+        System.out.println("Calling Primary server");
         String[] currentLeaderData = server.getCurrentLeaderData();
         String IPAddress = currentLeaderData[0];
-        int port = Integer.parseInt( currentLeaderData[1] );
-        return callServer( stockSymbol, request, false, IPAddress, port );
+        int port = Integer.parseInt(currentLeaderData[1]);
+        return callServer(itemCode, request, false, IPAddress, port);
     }
 
-    private void updateSecondaryServers(String stockSymbol, OrderRequest request) throws KeeperException, InterruptedException {
-        System.out.println( "Updating secondary servers" );
+    private void updateSecondaryServers(String itemCode, InventoryOperationRequest request) throws KeeperException, InterruptedException {
+        System.out.println("Updating secondary servers");
         List<String[]> othersData = server.getOthersData();
-        for ( String[] data : othersData ) {
+        for (String[] data : othersData) {
             String IPAddress = data[0];
-            int port = Integer.parseInt( data[1] );
-            callServer( stockSymbol, request, true, IPAddress, port );
+            int port = Integer.parseInt(data[1]);
+            callServer(itemCode, request, true, IPAddress, port);
         }
     }
 
-    //display currently registered stocks
-    @Override
-    public void getStockMarketRegisteredData(Empty request, StreamObserver<StockMarketRegisteredRecord> responseObserver) {
-        this.server.getRegisteredStockDb()
-                .entrySet()
-                .stream()
-                .map( entry -> StockMarketRegisteredRecord.newBuilder()
-                        .setName( entry.getKey() )
-                        .setQuantity( entry.getValue() )
-                        .build() )
-                .forEach( responseObserver::onNext );
-        responseObserver.onCompleted();
-    }
+    public void orderItem(InventoryOperationRequest request, StreamObserver<InventoryOperationResponse> responseObserver) {
+        String itemCode = request.getItemCode();
 
-    //perform client request, primary server and secondary servers
-    @Override
-    public void tradeOperation(OrderRequest request, StreamObserver<OrderResponse> responseObserver) {
-        String stockSymbol = request.getStockSymbol();
-
-        if ( server.isLeader() ) {
-            // Act as primary
+        if (server.isLeader()) {
             try {
-                System.out.println( "Processing received client request as Primary" );
-                startDistributedTx( stockSymbol, request );
-                updateSecondaryServers( stockSymbol, request );
-                //BUY OR SELL
-                if(request.getOrderType() != "DELETE"){
-                    if ( server.getRegisteredStockDb().get( stockSymbol.toUpperCase( Locale.ENGLISH ) ) >= request.getQuantity() ) {
-                        ( (DistributedTxCoordinator) server.getStockTransaction() ).perform();
-                        transactionStatus = "SUCCESSFUL";
-                    }
-                    else {
-                        ( (DistributedTxCoordinator) server.getStockTransaction() ).sendGlobalAbort();
-                        transactionStatus = "FAILED";
-                    }
+                System.out.println("Processing received client request as Primary");
+                startDistributedTx(itemCode, request);
+                updateSecondaryServers(itemCode, request);
+                if (server.getInventoryDb().containsKey(itemCode)) {
+                    ((DistributedTxCoordinator) server.getOrderTransaction()).perform();
+                    transactionStatus = "SUCCESSFUL";
+                } else {
+                    ((DistributedTxCoordinator) server.getOrderTransaction()).sendGlobalAbort();
+                    transactionStatus = "FAILED";
                 }
-                //DELETE
-                else{
-                    List<OrderRequest> orderBook = server.getOrderBook();
-                    for ( OrderRequest orderRequest : orderBook ) {
-                        if ( orderRequest.getId() == request.getId() ) {
-                            ( (DistributedTxCoordinator) server.getStockTransaction() ).perform();
-                            transactionStatus = "SUCCESSFUL";
-                        }
-                        else {
-                            ( (DistributedTxCoordinator) server.getStockTransaction() ).sendGlobalAbort();
-                            transactionStatus = "FAILED";
-                        }
-                    }
-                }
-
-            }
-            catch ( Exception e ) {
-                System.out.println( "Error while processing the client request" + e.getMessage() );
+            } catch (Exception e) {
+                System.out.println("Error while processing the client request" + e.getMessage());
                 e.printStackTrace();
                 transactionStatus = "FAILED";
             }
-        }
-        else {
-            // Act As Secondary
-            if ( request.getIsSentByPrimary() ) {
-                System.out.println( "Processing received client request as Secondary, on Primary's command" );
-                startDistributedTx( stockSymbol, request );
+        } else {
+            if (request.getIsSentByPrimary()) {
+                System.out.println("Processing received client request as Secondary, on Primary's command");
+                startDistributedTx(itemCode, request);
 
-                //BUY OR SELL
-                if(request.getOrderType() != "DELETE") {
-                    if (server.getRegisteredStockDb().get(stockSymbol.toUpperCase(Locale.ENGLISH)) >= request.getQuantity()) {
-                        ((DistributedTxParticipant) server.getStockTransaction()).voteCommit();
-                        transactionStatus = "SUCCESSFUL";
-                    } else {
-                        ((DistributedTxParticipant) server.getStockTransaction()).voteAbort();
-                        transactionStatus = "FAILED";
-                    }
+                if (server.getInventoryDb().containsKey(itemCode)) {
+                    ((DistributedTxParticipant) server.getOrderTransaction()).voteCommit();
+                    transactionStatus = "SUCCESSFUL";
+                } else {
+                    ((DistributedTxParticipant) server.getOrderTransaction()).voteAbort();
+                    transactionStatus = "FAILED";
                 }
-
-                //DELETE
-                else{
-                    List<OrderRequest> orderBook = server.getOrderBook();
-                    for ( OrderRequest orderRequest : orderBook ) {
-                        if ( orderRequest.getId() == request.getId() ) {
-                            ((DistributedTxParticipant) server.getStockTransaction()).voteCommit();
-                            transactionStatus = "SUCCESSFUL";
-                        }
-                        else {
-                            ((DistributedTxParticipant) server.getStockTransaction()).voteAbort();
-                            transactionStatus = "FAILED";
-                        }
-                    }
-                }
-            }
-            else {
-                OrderResponse response = callPrimary( stockSymbol, request );
-                if ( response.getStatus().equals( "SUCCESSFUL" ) ) {
+            } else {
+                InventoryOperationResponse response = callPrimary(itemCode, request);
+                if (response.getStatus().equals("SUCCESSFUL")) {
                     transactionStatus = "SUCCESSFUL";
                 }
             }
         }
-        OrderResponse response = OrderResponse
+        InventoryOperationResponse response = InventoryOperationResponse
                 .newBuilder()
-                .setStatus( transactionStatus )
+                .setStatus(transactionStatus)
                 .build();
-        responseObserver.onNext( response );
+        responseObserver.onNext(response);
         responseObserver.onCompleted();
     }
 
-    //get records in the orderBook
-    @Override
-    public void getOrderBookRecords(Empty request, StreamObserver<OrderRequest> responseObserver) {
-        this.server.getOrderBook().forEach( responseObserver::onNext );
+    public void updateInventory(InventoryOperationRequest request, StreamObserver<InventoryOperationResponse> responseObserver) {
+        String itemCode = request.getItemCode();
+        if (server.isLeader()) {
+            try {
+                System.out.println("Processing received client request as Primary");
+                startDistributedTx(itemCode, request);
+                updateSecondaryServers(itemCode, request);
+                if (server.getInventoryDb().containsKey(itemCode)) {
+                    ((DistributedTxCoordinator) server.getOrderTransaction()).perform();
+                    transactionStatus = "SUCCESSFUL";
+                } else {
+                    ((DistributedTxCoordinator) server.getOrderTransaction()).sendGlobalAbort();
+                    transactionStatus = "FAILED";
+                }
+            } catch (Exception e) {
+                System.out.println("Error while processing the client request" + e.getMessage());
+                e.printStackTrace();
+                transactionStatus = "FAILED";
+            }
+        } else {
+            if (request.getIsSentByPrimary()) {
+                System.out.println("Processing received client request as Secondary, on Primary's command");
+                startDistributedTx(itemCode, request);
+                if (server.getInventoryDb().containsKey(itemCode)) {
+                    ((DistributedTxParticipant) server.getOrderTransaction()).voteCommit();
+                    transactionStatus = "SUCCESSFUL";
+                } else {
+                    ((DistributedTxParticipant) server.getOrderTransaction()).voteAbort();
+                    transactionStatus = "FAILED";
+                }
+            } else {
+                InventoryOperationResponse response = callPrimary(itemCode, request);
+                if (response.getStatus().equals("SUCCESSFUL")) {
+                    transactionStatus = "SUCCESSFUL";
+                }
+            }
+        }
+        InventoryOperationResponse response = InventoryOperationResponse
+                .newBuilder()
+                .setStatus(transactionStatus)
+                .build();
+        responseObserver.onNext(response);
         responseObserver.onCompleted();
     }
 
-    //perform trade according to the client request. If a matching order is found, it will be deleted from the orderBook. If not order will be added to orderBook.
     private void performClientRequest() {
-        OrderRequest matchOrder = null;
-        OrderRequest deleteOrder = null;
-        if ( tempDataHolder != null ) {
-            String stockSymbol = tempDataHolder.getKey();
-            OrderRequest request = tempDataHolder.getValue();
-            double price = request.getPrice();
-            int quantity = request.getQuantity();
-            List<OrderRequest> orderBook = server.getOrderBook();
-
-            //BUY order
-            if ( request.getOrderType().equals( "BUY" ) ) {
-                for ( OrderRequest orderRequest : orderBook ) {
-                    if ( orderRequest.getStockSymbol().equals( stockSymbol ) && orderRequest.getOrderType().equals( "SELL" ) &&
-                            orderRequest.getPrice() == price && orderRequest.getQuantity() == quantity ) {
-                        matchOrder = orderRequest;
-                        break;
+        List<InventoryOperationRequest> orderRequestList = server.getOrderRequestList();
+        InventoryOperationRequest orderRequest = null;
+        if (tempDataHolder != null) {
+            String itemCode = tempDataHolder.getKey();
+            InventoryOperationRequest request = tempDataHolder.getValue();
+                    String operationType = request.getOperationType();
+            Map<String, ItemDetail> items = server.getInventoryDb();
+            if (items.containsKey(itemCode)) {
+                ItemDetail data = items.get(itemCode);
+                if (operationType.equals(OperationTypes.ORDER.name())) {
+                    System.out.println(" Order Hit. data.getQuantity()" + data.getQuantity());
+                    System.out.println(" Order Hit. request.getQuantity()" + request.getQuantity());
+                    if ((data.getQuantity() -request.getQuantity())> 0 || (data.getQuantity() -request.getQuantity()) == 0) {
+                        System.out.println(" Order if. request.getQuantity()" + request.getQuantity());
+                        server.getInventoryDb().get(itemCode).setQuantity(data.getQuantity() -request.getQuantity());
+                    } else {
+                        System.out.println(" Order Queue. request.getQuantity()" + request.getQuantity());
+                        orderRequestList.add(request);
+                        System.out.println(itemCode + " Order added to the queue");
                     }
-                }
-                orderBook.remove( matchOrder );
-            }
+                    System.out.println(itemCode + " order is successful");
+                } else if (operationType.equals(OperationTypes.UPDATE.name())) {
+                    System.out.println(" Order Update. request.getQuantity()" + request.getQuantity());
 
-            //SELL order
-            else if ( request.getOrderType().equals( "SELL" ) ) {
-                for ( OrderRequest orderRequest : orderBook ) {
-                    if ( orderRequest.getStockSymbol().equals( stockSymbol ) && orderRequest.getOrderType().equals( "BUY" ) &&
-                            orderRequest.getPrice() == price && orderRequest.getQuantity() == quantity ) {
-                        matchOrder = orderRequest;
-                        break;
+                    server.getInventoryDb().get(itemCode).setQuantity(data.getQuantity() + request.getQuantity());
+                    for ( InventoryOperationRequest orderReq:  orderRequestList) {
+                        if(orderReq.getItemCode().equals(request.getItemCode()) && (orderReq.getQuantity() < server.getInventoryDb().get(itemCode).getQuantity())) {
+                            System.out.println(" Order Queue  Run. request.getItemCode()" + request.getItemCode());
+
+                            server.getInventoryDb().get(orderReq.getItemCode()).setQuantity(server.getInventoryDb().get(itemCode).getQuantity() - orderReq.getQuantity());
+                            System.out.println(orderReq.getItemCode() + " order executed successfully");
+
+                        }
                     }
+                    System.out.println(itemCode + " added to the inventory");
                 }
-                orderBook.remove( matchOrder );
-            }
-
-
-            //DELETE order
-            else if ( request.getOrderType().equals( "DELETE" ) ) {
-                for ( OrderRequest orderRequest : orderBook ) {
-                    if ( orderRequest.getId() == request.getId() ) {
-                        deleteOrder = orderRequest;
-                        break;
-                    }
-                }
-                orderBook.remove( deleteOrder );
-            }
-
-            if ( matchOrder == null && deleteOrder == null ) {
-                server.addOrderToOrderBook( request );
-                System.out.println(stockSymbol + " " + request.getOrderType() +" order request added to the order-book. Committed.. ");
-            }
-            else if ( matchOrder != null && deleteOrder == null ) {
-                System.out.println(stockSymbol + " " + request.getOrderType() +" order request found a match and trade completed. Committed.. " );
-            }
-            else if ( matchOrder == null && deleteOrder != null ) {
-                System.out.println("Order successfully deleted. Committed.. " );
             }
             tempDataHolder = null;
         }
     }
 
+    public void getInventory(Empty request, StreamObserver<Item> responseObserver) {
+        this.server.getInventoryDb()
+                .entrySet()
+                .stream()
+                .map(entry -> Item.newBuilder()
+                        .setItemCode(entry.getKey())
+                        .setName(entry.getValue().getName())
+                        .setQuantity(entry.getValue().getQuantity())
+                        .setPrice(entry.getValue().getPrice())
+                        .build())
+                .forEach(responseObserver::onNext);
+        responseObserver.onCompleted();
+    }
 }

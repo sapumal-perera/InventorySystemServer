@@ -4,7 +4,7 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>ds.trade</groupId>
+    <groupId>ds.inventory</groupId>
     <artifactId>inventory-system-server</artifactId>
     <version>1.0.0</version>
 
@@ -30,12 +30,12 @@
             <version>1.36.0</version>
         </dependency>
         <dependency>
-            <groupId>ds.trade</groupId>
+            <groupId>ds.inventory</groupId>
             <artifactId>synchronization-distiributed-lock</artifactId>
             <version>4.0.0</version>
         </dependency>
         <dependency>
-            <groupId>ds.trade</groupId>
+            <groupId>ds.inventory</groupId>
             <artifactId>name-service-client</artifactId>
             <version>1.0.0</version>
         </dependency>
